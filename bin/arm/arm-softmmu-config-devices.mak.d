@@ -1,0 +1,1 @@
+arm-softmmu/config-devices.mak:  /home/dragan/Desktop/PDS/Master/Realizacija/qemu-3.1.0/default-configs/pci.mak /home/dragan/Desktop/PDS/Master/Realizacija/qemu-3.1.0/default-configs/usb.mak  /home/dragan/Desktop/PDS/Master/Realizacija/qemu-3.1.0/default-configs/virtio.mak  
