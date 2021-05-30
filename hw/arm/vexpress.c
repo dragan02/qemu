@@ -161,8 +161,16 @@ static hwaddr motherboard_aseries_map[] = {
 };
 
 /* PL061 GPIO address and IRQ number */
-#define PL061_GPIO_ADDR (0x10003000)
-#define PL061_GPIO_IRQ (26)
+#define VE_PL061_GPIO (0x10003000)
+#define VE_PL061_GPIO_IRQ (26)
+
+/* Custom I2C sensor address */
+#define VE_CUSTOM_I2C_SENS (0x10008000)
+#define VE_CUSTOM_I2C_SENS_ADDR (27)
+
+/* Custom memory-mapped sensor address and IRQ number */
+#define VE_CUSTOM_MMS (0x1000D000)
+#define VE_CUSTOM_MMS_IRQ (28)
 
 /* Structure defining the peculiarities of a specific daughterboard */
 
@@ -646,7 +654,15 @@ static void vexpress_common_init(MachineState *machine)
     sysbus_create_simple("sp804", map[VE_TIMER23], pic[3]);
     
     /* PL061 GPIO instantiation */
-    sysbus_create_simple("pl061", PL061_GPIO_ADDR, pic[PL061_GPIO_IRQ]);
+    sysbus_create_simple("pl061", VE_PL061_GPIO, pic[VE_PL061_GPIO_IRQ]);
+
+    /* Custom I2C sensor instantiation */
+    dev = sysbus_create_simple("versatile_i2c", VE_CUSTOM_I2C_SENS, NULL);
+    i2c = (I2CBus *)qdev_get_child_bus(dev, "i2c");
+    i2c_create_slave(i2c, "custom.i2csens", VE_CUSTOM_I2C_SENS_ADDR);
+    
+    /* Custom memory mapped sensor instantiation */
+    sysbus_create_simple("custom.mmsens", VE_CUSTOM_MMS, pic[VE_CUSTOM_MMS_IRQ]);
 
     dev = sysbus_create_simple("versatile_i2c", map[VE_SERIALDVI], NULL);
     i2c = (I2CBus *)qdev_get_child_bus(dev, "i2c");

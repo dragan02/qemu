@@ -11,14 +11,15 @@
 #include "qemu/osdep.h"
 #include "hw/sysbus.h"
 #include "qemu/log.h"
+#include "qemu/main-loop.h" /* iothread mutex */
 
 /* Aditional includes, needed for shared memory */
-#include <fcntl.h> /* Defines O_* constants */
-#include <sys/stat.h> /* Defines mode constants */
-#include <sys/mman.h> /* Defines mmap flags */
+#include <semaphore.h>  /* Semaphore */
+#include <fcntl.h>      /* Defines O_* constants */
+#include <sys/stat.h>   /* Defines mode constants */
+#include <sys/mman.h>   /* Defines mmap flags */
 
-
-//#define DEBUG_PL061 1
+//#define DEBUG_PL061 1 
 
 #ifdef DEBUG_PL061
 #define DPRINTF(fmt, ...) \
@@ -66,9 +67,11 @@ typedef struct PL061State {
     uint32_t amsel;
     qemu_irq irq;
     qemu_irq out[8];
+    QemuThread thread; /* Semaphore thread */
     const unsigned char *id;
     uint32_t rsvd_start; /* reserved area: [rsvd_start, 0xfcc] */
-    uint32_t *shmem; /* Shared register meant to store IN/OUT data*/
+    uint32_t *shmem;    /* Shared register meant to store IN/OUT data */
+    sem_t *sem;         /* Named semaphore */
 } PL061State;
 
 static const VMStateDescription vmstate_pl061 = {
@@ -107,7 +110,7 @@ static void pl061_update(PL061State *s)
     uint8_t mask;
     uint8_t out;
     int i;
-
+  
     DPRINTF("dir = %d, data = %d\n", s->dir, s->data);
 
     /* Outputs float high.  */
@@ -152,9 +155,6 @@ static void pl061_update(PL061State *s)
     s->istate |= ~(s->data ^ s->iev) & s->isense;
 
     DPRINTF("istate = %02X\n", s->istate);
-    
-    /* Update shared memory data value */
-    //*s->shmem = s->data;
 
     qemu_set_irq(s->irq, (s->istate & s->im) != 0);
 }
@@ -165,9 +165,6 @@ static uint64_t pl061_read(void *opaque, hwaddr offset,
     PL061State *s = (PL061State *)opaque;
     
     DPRINTF("pl061_read\n");
-    
-    /* Update data from shared memory */
-    s->data = *s->shmem;
 
     if (offset < 0x400) {
         return s->data & (offset >> 2);
@@ -378,35 +375,71 @@ static void * get_shmem_pointer(void)
     int fd, seg_size;
     void *addr;
     
-    DPRINTF("Shared memory initialization\n");
+    DPRINTF("GPIO shared memory initialization\n");
     
     /* Auxiliary variable for storing size of shared memory */
     seg_size = sizeof(uint32_t);
     
     /* Create new shared memory object */
-    fd = shm_open("test1", O_CREAT | O_RDWR | O_TRUNC, S_IRUSR | S_IWUSR);
+    fd = shm_open("gpio", O_CREAT | O_RDWR | O_TRUNC, S_IRUSR | S_IWUSR);
     if (fd == -1){
-        DPRINTF("Function shm_open failed!\n");
+        DPRINTF("Function shm_open failed\n");
     }
     
     /* Set sh. mem. segment size */
     if (ftruncate(fd, seg_size) == -1){
-        DPRINTF("Truncating shared memory failed!\n");
+        DPRINTF("Truncating shared memory failed\n");
     }
     
     /* Map shared memory object to process virtual address space */
     addr = (uint32_t*)mmap(NULL, seg_size, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
     if (addr == MAP_FAILED) {
-        DPRINTF("Memory mapping failed!\n");
+        DPRINTF("Memory mapping failed\n");
     }
 
     /* Close appropriate sh. mem. object */
     if (close(fd) == -1){
-        DPRINTF("Closing shmem file descriptor failed!\n");
+        DPRINTF("Closing shmem file descriptor failed\n");
     }
     
     return addr;
 
+}
+
+/* 
+* Semaphore thread
+*
+* Additional thread which waits for semaphore notification after which
+* PL061 data is being updated from shared memory
+*/
+static void * semaphore_thread(void * arg)
+{
+    PL061State *s = (PL061State*) arg;
+  
+    /* Get named semaphore pointer */
+    s->sem = sem_open("/gpio", O_CREAT | O_RDWR, S_IRUSR | S_IWUSR, 0);
+    if (s->sem == SEM_FAILED){
+        DPRINTF("Opening named semaphore failed\n");
+        exit(1);
+    }
+    else{
+        DPRINTF("Opening named semaphore succeded\n");
+    }
+  
+    while(1)
+    {
+        sem_wait(s->sem);
+        
+        DPRINTF("GPIO data updated\n");
+      
+        /* Update data from shared memory */
+        s->data = *s->shmem;
+    
+        /* Update IRQ status */
+        qemu_mutex_lock_iothread();
+        pl061_update(s);
+        qemu_mutex_unlock_iothread();
+    }
 }
 
 static void pl061_init(Object *obj)
@@ -426,6 +459,9 @@ static void pl061_init(Object *obj)
     
     /* Get shared memory pointer */
     s->shmem = get_shmem_pointer();
+
+    /* Make new thread which checks semaphore value */
+    qemu_thread_create(&s->thread, "gpio_semaphore", semaphore_thread, s, QEMU_THREAD_JOINABLE);
     
     DPRINTF("GPIO initialized\n");
 }
